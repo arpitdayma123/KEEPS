@@ -20,3 +20,4 @@ pydantic==2.10.6
 ffmpeg-python==0.2.0
 av
 spaces
+runpod
