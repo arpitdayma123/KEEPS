@@ -43,18 +43,31 @@ WEIGHTS_DIR = "/app/weights/" # Standard directory within the Docker image
 def init():
     global device, keep_net, FACELIB_WEIGHTS_DIR, fn_set_realesrgan_upsampler
 
-    print("Starting model initialization (init function)...")
-    device = basicsr_get_device() # Use the renamed import
-    print(f"Using device: {device}")
+    print("[INIT] Starting model initialization...")
+    
+    print("[INIT] Getting device...")
+    device = basicsr_get_device() 
+    print(f"[INIT] Using device: {device}")
 
+    print("[INIT] Creating directories...")
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
-    os.makedirs(os.path.join(WEIGHTS_DIR, "KEEP"), exist_ok=True)
-    FACELIB_WEIGHTS_DIR_local = os.path.join(WEIGHTS_DIR, "facelib") # Assign to local then global
+    print(f"[INIT] Ensured WEIGHTS_DIR exists: {WEIGHTS_DIR}")
+    keep_dir = os.path.join(WEIGHTS_DIR, "KEEP")
+    os.makedirs(keep_dir, exist_ok=True)
+    print(f"[INIT] Ensured KEEP_DIR exists: {keep_dir}")
+    
+    FACELIB_WEIGHTS_DIR_local = os.path.join(WEIGHTS_DIR, "facelib")
     os.makedirs(FACELIB_WEIGHTS_DIR_local, exist_ok=True)
-    os.makedirs(os.path.join(WEIGHTS_DIR, "realesrgan"), exist_ok=True)
-    FACELIB_WEIGHTS_DIR = FACELIB_WEIGHTS_DIR_local
+    print(f"[INIT] Ensured FACELIB_DIR exists: {FACELIB_WEIGHTS_DIR_local}")
+    FACELIB_WEIGHTS_DIR = FACELIB_WEIGHTS_DIR_local # Assign to global
 
+    realesrgan_dir = os.path.join(WEIGHTS_DIR, "realesrgan")
+    os.makedirs(realesrgan_dir, exist_ok=True)
+    print(f"[INIT] Ensured REALESRGAN_DIR exists: {realesrgan_dir}")
+    print("[INIT] Directory creation complete.")
 
+    # --- KEEP Model ---
+    print("[INIT] Configuring KEEP model...")
     keep_model_config = {
         'architecture': {
             'img_size': 512, 'emb_dim': 256, 'dim_embd': 512, 'n_head': 8, 'n_layers': 9,
@@ -62,48 +75,82 @@ def init():
             'num_uncertainty_layers': 3, 'cfa_list': ['16', '32'], 'cfa_nhead': 4, 'cfa_dim': 256, 'cond': 1
         },
         'checkpoint_url': os.path.join(MODEL_BASE_URL, 'KEEP-b76feb75.pth'),
-        'checkpoint_dir': os.path.join(WEIGHTS_DIR, "KEEP")
+        'checkpoint_dir': keep_dir
     }
-    
+    print("[INIT] KEEP model configuration set.")
+
+    print("[INIT] Initializing KEEP architecture...")
     loaded_keep_net = ARCH_REGISTRY.get('KEEP')(**keep_model_config['architecture']).to(device)
+    print("[INIT] KEEP architecture initialized on device.")
+
+    print(f"[INIT] Downloading KEEP model weights from {keep_model_config['checkpoint_url']} to {keep_model_config['checkpoint_dir']}...")
     keep_ckpt_path = load_file_from_url(url=keep_model_config['checkpoint_url'], model_dir=keep_model_config['checkpoint_dir'], progress=True, file_name=None)
+    print(f"[INIT] KEEP model weights downloaded to {keep_ckpt_path}.")
+
+    print("[INIT] Loading KEEP model checkpoint...")
     keep_checkpoint = torch.load(keep_ckpt_path, map_location=device, weights_only=True)
+    print("[INIT] KEEP model checkpoint loaded.")
+
+    print("[INIT] Loading state dict into KEEP model...")
     loaded_keep_net.load_state_dict(keep_checkpoint['params_ema'])
+    print("[INIT] State dict loaded into KEEP model.")
+
     loaded_keep_net.eval()
     keep_net = loaded_keep_net # Assign to global
-    print("KEEP model loaded.")
+    print("[INIT] KEEP model loaded and set to eval mode.")
 
-    # Define set_realesrgan_upsampler within init or make it accessible via global fn_
-    def _set_realesrgan_upsampler_internal(): # Underscore to indicate it's meant for internal use or to be wrapped
+    # --- RealESRGAN Setup ---
+    print("[INIT] Defining RealESRGAN upsampler factory function...")
+    def _set_realesrgan_upsampler_internal():
+        print("[INIT_RealESRGAN] Factory called. Initializing RealESRGAN...")
         from basicsr.archs.rrdbnet_arch import RRDBNet
         from basicsr.utils.realesrgan_utils import RealESRGANer
         
         use_half = False
-        if device.type == 'cuda': # Check device availability properly
+        if device.type == 'cuda':
             use_half = True 
+        print(f"[INIT_RealESRGAN] use_half set to: {use_half}")
 
+        realesrgan_model_url = os.path.join(MODEL_BASE_URL, 'RealESRGAN_x2plus.pth')
+        print(f"[INIT_RealESRGAN] Downloading RealESRGAN model from {realesrgan_model_url} to {realesrgan_dir}...")
         model_path = load_file_from_url(
-            url=os.path.join(MODEL_BASE_URL, 'RealESRGAN_x2plus.pth'),
-            model_dir=os.path.join(WEIGHTS_DIR, "realesrgan"), progress=True, file_name=None
+            url=realesrgan_model_url,
+            model_dir=realesrgan_dir, progress=True, file_name=None
         )
+        print(f"[INIT_RealESRGAN] RealESRGAN model downloaded to {model_path}.")
+
+        print("[INIT_RealESRGAN] Initializing RRDBNet model...")
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
+        print("[INIT_RealESRGAN] RRDBNet model initialized.")
+
+        print("[INIT_RealESRGAN] Initializing RealESRGANer...")
         upsampler = RealESRGANer(scale=2, model_path=model_path, model=model, tile=400, tile_pad=40, pre_pad=0, half=use_half, device=device)
+        print("[INIT_RealESRGAN] RealESRGANer initialized.")
+
         if device.type == 'cpu':
             import warnings
-            warnings.warn('RealESRGAN: Running on CPU now!', category=RuntimeWarning)
-        print("RealESRGAN upsampler initialized by factory function.")
+            warnings.warn('[INIT_RealESRGAN] RealESRGAN: Running on CPU now!', category=RuntimeWarning)
+        print("[INIT_RealESRGAN] RealESRGAN upsampler setup complete.")
         return upsampler
     
-    fn_set_realesrgan_upsampler = _set_realesrgan_upsampler_internal # Assign the function itself to global
+    fn_set_realesrgan_upsampler = _set_realesrgan_upsampler_internal
+    print("[INIT] RealESRGAN upsampler factory function defined and assigned globally.")
 
-    load_file_from_url(url=os.path.join(MODEL_BASE_URL, 'detection_Resnet50_Final.pth'), model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
-    load_file_from_url(url=os.path.join(MODEL_BASE_URL, 'detection_mobilenet0.25_Final.pth'), model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
-    load_file_from_url(url=os.path.join(MODEL_BASE_URL, 'yolov5n-face.pth'), model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
-    load_file_from_url(url=os.path.join(MODEL_BASE_URL, 'yolov5l-face.pth'), model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
-    load_file_from_url(url=os.path.join(MODEL_BASE_URL, 'parsing_parsenet.pth'), model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
-    print("Facelib helper models downloaded.")
-    print("Model initialization (init function) complete.")
-    # No return value needed if using globals
+    # --- Facelib Weights Download ---
+    print("[INIT] Downloading Facelib helper models...")
+    facelib_models_to_download = [
+        'detection_Resnet50_Final.pth', 'detection_mobilenet0.25_Final.pth',
+        'yolov5n-face.pth', 'yolov5l-face.pth', 'parsing_parsenet.pth'
+    ]
+    for model_name in facelib_models_to_download:
+        url = os.path.join(MODEL_BASE_URL, model_name)
+        print(f"[INIT_Facelib] Downloading {model_name} from {url} to {FACELIB_WEIGHTS_DIR}...")
+        load_file_from_url(url=url, model_dir=FACELIB_WEIGHTS_DIR, progress=True, file_name=None)
+        print(f"[INIT_Facelib] Downloaded {model_name}.")
+    print("[INIT] Facelib helper models download complete.")
+    
+    print("[INIT] Model initialization (init function) complete.")
+    # No return value needed as using globals
 
 # --- enhance_video_file function (uses global model variables) ---
 # This function's definition remains largely the same,
